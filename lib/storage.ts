@@ -14,10 +14,17 @@ export function load<T>(key: string): T | null {
   }
 }
 
-export function save(key: string, value: unknown): void {
+/**
+ * Devuelve si se ha podido guardar. Para la agenda da un poco igual, pero un
+ * diario que no se guarda es texto que se pierde al cerrar la pestaña, y eso
+ * hay que decirlo.
+ */
+export function save(key: string, value: unknown): boolean {
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
+    return true;
   } catch {
     // Sin almacenamiento: se sigue en memoria.
+    return false;
   }
 }

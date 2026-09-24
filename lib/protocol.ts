@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { AgentStep } from "./agent";
 import { eventSchema, MAX_EVENTS, type CalendarEvent } from "./calendar";
-import { isLocalDateTime, isValidTimeZone } from "./time";
+import { entradaSchema } from "./diario";
+import { isLocalDate, isLocalDateTime, isValidTimeZone } from "./time";
 
 /**
  * El contrato entre la interfaz y /api/chat.
@@ -41,3 +42,45 @@ export interface ProviderStatus {
   model: string;
   label: string;
 }
+
+/**
+ * El contrato de /api/informe. Igual que el chat, el servidor no guarda nada:
+ * viaja el diario del periodo, sus eventos y, para el mensual, los informes
+ * semanales que ya se pueden aprovechar. El final del periodo no se manda: lo
+ * calcula el servidor a partir del tipo y del primer día.
+ */
+export const informeRequestSchema = z.object({
+  tipo: z.enum(["semana", "mes"]),
+  /** El lunes de la semana o el día 1 del mes. */
+  desde: z.string().refine(isLocalDate, "desde debe ser AAAA-MM-DD."),
+  /** El día de hoy para quien lo pide: hasta ahí cubre un periodo en curso. */
+  hoy: z.string().refine(isLocalDate, "hoy debe ser AAAA-MM-DD."),
+  entradas: z.array(entradaSchema).max(31),
+  eventos: z.array(eventSchema).max(MAX_EVENTS),
+  reutilizables: z
+    .array(
+      z.object({
+        desde: z.string().refine(isLocalDate, "desde debe ser AAAA-MM-DD."),
+        hasta: z.string().refine(isLocalDate, "hasta debe ser AAAA-MM-DD."),
+        narrativa: z.string().trim().min(1).max(8000),
+      }),
+    )
+    .max(6)
+    .default([]),
+});
+
+export type InformeRequest = z.infer<typeof informeRequestSchema>;
+
+export interface InformeGenerado {
+  /** El informe entero, listo para leer o exportar. */
+  markdown: string;
+  /** Solo lo que ha redactado el modelo, sin título ni cifras: es lo que el mensual reaprovecha. */
+  narrativa: string;
+  modelo: string;
+}
+
+/** Una línea de la respuesta (NDJSON). El mensual hace varias llamadas y va contando por dónde va. */
+export type InformeStreamEvent =
+  | { type: "progreso"; texto: string }
+  | { type: "hecho"; informe: InformeGenerado }
+  | { type: "error"; message: string };

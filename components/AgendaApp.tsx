@@ -3,8 +3,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { Calendar, CalendarError, eventSchema, MAX_EVENTS, type CalendarEvent, type NewEvent } from "@/lib/calendar";
-import { streamChat } from "@/lib/client";
+import { streamChat, streamInforme } from "@/lib/client";
+import { huella, type Periodo } from "@/lib/diario";
+import { download } from "@/lib/download";
 import { icsFileName, toICS } from "@/lib/ics";
+import {
+  ALMACEN_VACIO,
+  almacenSchema,
+  avisoPendiente,
+  claveInforme,
+  desactualizado,
+  diarioEnMarkdown,
+  guardarInforme,
+  nombreArchivo,
+  nuevoGuardado,
+  peticionInforme,
+  type Almacen,
+  type InformeGuardado,
+} from "@/lib/informes-guardados";
 import { newId } from "@/lib/ids";
 import { MAX_HISTORY, type ProviderStatus } from "@/lib/protocol";
 import { sampleEvents } from "@/lib/samples";
@@ -12,10 +28,18 @@ import { load, save } from "@/lib/storage";
 import { addDays, dateOf, MESES, nowIn, startOfWeek, type LocalDate, type LocalDateTime } from "@/lib/time";
 import Chat, { type UiMessage } from "./Chat";
 import DayList from "./DayList";
+import Diario from "./Diario";
 import EventDialog, { type EditorState } from "./EventDialog";
+import InformeDialog from "./InformeDialog";
 import WeekView from "./WeekView";
 
 const STORAGE_KEY = "agenda-ia:v1";
+/**
+ * El diario va en su propia clave: es lo único que no se puede rehacer. Así
+ * «Reiniciar» —que vuelve a la agenda de ejemplo— no lo toca, y una agenda
+ * corrupta no se lo lleva por delante al validarla.
+ */
+const DIARIO_KEY = "agenda-ia:diario:v1";
 const STORED_MESSAGES = 60;
 const storedEventsSchema = z.array(eventSchema).max(MAX_EVENTS);
 const REPO_URL = "https://github.com/PereMateuRodriguez/agenda-ia";
@@ -59,7 +83,18 @@ export default function AgendaApp() {
   const [highlight, setHighlight] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<ProviderStatus | { error: string } | null>(null);
-  const [tab, setTab] = useState<"agenda" | "asistente">("agenda");
+  // En móvil se ve una columna u otra; en escritorio, las dos. La de la
+  // derecha es el asistente o el diario.
+  const [tab, setTab] = useState<"agenda" | "panel">("agenda");
+  const [panel, setPanel] = useState<"asistente" | "diario">("asistente");
+  const [almacen, setAlmacen] = useState<Almacen>(ALMACEN_VACIO);
+  const [diarioGuardado, setDiarioGuardado] = useState(true);
+  const [generando, setGenerando] = useState<{ clave: string; progreso: string } | null>(null);
+  const [errorInforme, setErrorInforme] = useState<string | null>(null);
+  const [viendo, setViendo] = useState<InformeGuardado | null>(null);
+  const informeAbort = useRef<AbortController | null>(null);
+  /** Lo último que hay en el navegador, para no reescribirlo si no ha cambiado nada. */
+  const diarioEnDisco = useRef<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [undoableId, setUndoableId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -91,6 +126,13 @@ export default function AgendaApp() {
     } else {
       setEvents(sampleEvents(current));
     }
+    // Si lo guardado no pasa la validación no se pisa: se deja en el
+    // navegador tal cual, por si se puede recuperar a mano, y se empieza en
+    // blanco sin escribir encima hasta que haya algo nuevo.
+    const storedDiario = almacenSchema.safeParse(load(DIARIO_KEY));
+    const inicial = storedDiario.success ? storedDiario.data : ALMACEN_VACIO;
+    setAlmacen(inicial);
+    diarioEnDisco.current = JSON.stringify(inicial);
     setReady(true);
 
     const tick = setInterval(() => setNow(nowIn(tz)), 30_000);
@@ -109,6 +151,20 @@ export default function AgendaApp() {
     });
     save(STORAGE_KEY, { events, messages: recent } satisfies Stored);
   }, [ready, events, messages]);
+
+  // Se escribe a cada tecla, así que se espera un momento antes de guardar:
+  // serializar el diario entero en cada pulsación es trabajo tirado.
+  useEffect(() => {
+    if (!ready) return;
+    const json = JSON.stringify(almacen);
+    if (json === diarioEnDisco.current) return;
+    const t = setTimeout(() => {
+      const ok = save(DIARIO_KEY, almacen);
+      if (ok) diarioEnDisco.current = json;
+      setDiarioGuardado(ok);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [ready, almacen]);
 
   useEffect(() => {
     fetch("/api/estado")
@@ -207,15 +263,7 @@ export default function AgendaApp() {
     setEditor(null);
   };
 
-  const exportIcs = () => {
-    const blob = new Blob([toICS(events)], { type: "text/calendar;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = icsFileName(dateOf(now));
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
+  const exportIcs = () => download(icsFileName(dateOf(now)), toICS(events), "text/calendar;charset=utf-8");
 
   const resetAgenda = () => {
     if (!window.confirm("¿Borrar todos los eventos y la conversación? Se volverá a la agenda de ejemplo.")) return;
@@ -226,6 +274,51 @@ export default function AgendaApp() {
   };
 
   const today = dateOf(now);
+
+  const escribir = (fecha: LocalDate, texto: string) =>
+    setAlmacen((a) => {
+      const diario = { ...a.diario };
+      if (texto.trim() === "") delete diario[fecha];
+      else diario[fecha] = texto;
+      return { ...a, diario };
+    });
+
+  const generarInforme = async (periodo: Periodo) => {
+    if (generando) return;
+    setPanel("diario");
+    setErrorInforme(null);
+    setGenerando({ clave: claveInforme(periodo), progreso: "Preparando…" });
+    // La huella se toma de lo que se envía: si se sigue escribiendo mientras
+    // el modelo trabaja, el informe tiene que quedar como desactualizado.
+    const { diario, informes } = almacen;
+    const enviada = huella(diario, periodo);
+    const controller = new AbortController();
+    informeAbort.current = controller;
+    try {
+      const informe = await streamInforme(
+        peticionInforme(periodo, diario, events, today, informes),
+        (progreso) => setGenerando({ clave: claveInforme(periodo), progreso }),
+        controller.signal,
+      );
+      const guardado = nuevoGuardado(periodo, informe, enviada, nowIn(timeZone));
+      setAlmacen((a) => ({ ...a, informes: guardarInforme(a.informes, guardado) }));
+      setViendo(guardado);
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        setErrorInforme(err instanceof Error ? err.message : "Error desconocido.");
+      }
+    } finally {
+      setGenerando(null);
+      informeAbort.current = null;
+    }
+  };
+
+  const borrarInforme = (informe: InformeGuardado) => {
+    if (!window.confirm("¿Borrar este informe? El diario no se toca.")) return;
+    setAlmacen((a) => ({ ...a, informes: a.informes.filter((i) => claveInforme(i) !== claveInforme(informe)) }));
+  };
+
+  const aviso = ready ? avisoPendiente(today, almacen.diario, almacen.informes, almacen.avisoDescartado) : null;
   const openCreate = (start?: LocalDateTime) =>
     setEditor({
       mode: "create",
@@ -297,22 +390,32 @@ export default function AgendaApp() {
         )}
       </header>
 
-      {/* En pantallas estrechas, agenda y asistente van en pestañas. */}
+      {/* En pantallas estrechas, agenda, asistente y diario van en pestañas. */}
       <div className="flex border-b border-white/10 lg:hidden" role="tablist">
-        {(["agenda", "asistente"] as const).map((t) => (
-          <button
-            key={t}
-            type="button"
-            role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
-            className={`flex-1 py-2.5 font-mono text-xs uppercase tracking-[0.2em] ${
-              tab === t ? "border-b-2 border-neon-cyan text-neon-cyan" : "text-zinc-500"
-            }`}
-          >
-            {t}
-          </button>
-        ))}
+        {(["agenda", "asistente", "diario"] as const).map((t) => {
+          const selected = t === "agenda" ? tab === "agenda" : tab === "panel" && panel === t;
+          return (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              onClick={() => {
+                if (t === "agenda") setTab("agenda");
+                else {
+                  setTab("panel");
+                  setPanel(t);
+                }
+              }}
+              className={`relative flex-1 py-2.5 font-mono text-xs uppercase tracking-[0.2em] ${
+                selected ? "border-b-2 border-neon-cyan text-neon-cyan" : "text-zinc-500"
+              }`}
+            >
+              {t}
+              {t === "diario" && aviso && <AvisoPunto />}
+            </button>
+          );
+        })}
       </div>
 
       <main className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_24rem] xl:grid-cols-[minmax(0,1fr)_26rem]">
@@ -347,24 +450,91 @@ export default function AgendaApp() {
         </div>
 
         <div
-          className={`min-h-0 border-white/10 bg-carbon-900/60 lg:border-l ${tab === "asistente" ? "block" : "hidden"} lg:block`}
+          className={`min-h-0 flex-col border-white/10 bg-carbon-900/60 lg:flex lg:border-l ${tab === "panel" ? "flex" : "hidden"}`}
         >
-          <Chat
-            messages={messages}
-            busy={busy || !ready}
-            status={status}
-            undoableId={undoableId}
-            onSend={(t) => void send(t)}
-            onUndo={undo}
-            onClear={() => {
-              setMessages([]);
-              setUndoableId(null);
-            }}
-          />
+          <div className="hidden border-b border-white/10 lg:flex" role="tablist" aria-label="Panel">
+            {(["asistente", "diario"] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                role="tab"
+                aria-selected={panel === p}
+                onClick={() => setPanel(p)}
+                className={`relative flex-1 py-2.5 font-mono text-xs uppercase tracking-[0.2em] ${
+                  panel === p ? "border-b-2 border-neon-cyan text-neon-cyan" : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {p}
+                {p === "diario" && aviso && <AvisoPunto />}
+              </button>
+            ))}
+          </div>
+
+          {/* Los dos se quedan montados y solo se ocultan: cambiar de pestaña
+              no puede llevarse lo que se estaba escribiendo. */}
+          <div className={`min-h-0 flex-1 ${panel === "asistente" ? "block" : "hidden"}`}>
+            <Chat
+              messages={messages}
+              busy={busy || !ready}
+              status={status}
+              undoableId={undoableId}
+              onSend={(t) => void send(t)}
+              onUndo={undo}
+              onClear={() => {
+                setMessages([]);
+                setUndoableId(null);
+              }}
+            />
+          </div>
+          <div className={`min-h-0 flex-1 ${panel === "diario" ? "block" : "hidden"}`}>
+            {ready && (
+              <Diario
+                weekStart={weekStart}
+                today={today}
+                diario={almacen.diario}
+                guardado={diarioGuardado}
+                informes={almacen.informes}
+                aviso={aviso}
+                generando={generando}
+                error={errorInforme}
+                status={status}
+                onEscribir={escribir}
+                onGenerar={(periodo) => void generarInforme(periodo)}
+                onVer={setViendo}
+                onBorrarInforme={borrarInforme}
+                onCancelar={() => informeAbort.current?.abort()}
+                onDescartarAviso={() => aviso && setAlmacen((a) => ({ ...a, avisoDescartado: aviso.desde }))}
+                onExportarDiario={() =>
+                  download(`diario-${today}.md`, diarioEnMarkdown(almacen.diario), "text/markdown;charset=utf-8")
+                }
+              />
+            )}
+          </div>
         </div>
       </main>
 
       <EventDialog state={editor} onClose={() => setEditor(null)} onSubmit={submitEvent} onDelete={deleteEvent} />
+      <InformeDialog
+        informe={viendo}
+        desactualizado={viendo ? desactualizado(viendo, almacen.diario) : false}
+        puedeRehacer={generando === null}
+        onClose={() => setViendo(null)}
+        onExportar={(i) => download(nombreArchivo(i), i.markdown, "text/markdown;charset=utf-8")}
+        onRehacer={(i) => {
+          setViendo(null);
+          void generarInforme({ tipo: i.tipo, desde: i.desde, hasta: i.hasta });
+        }}
+      />
     </div>
+  );
+}
+
+/** Un punto en la pestaña del diario cuando hay un informe que ofrecer. */
+function AvisoPunto() {
+  return (
+    <>
+      <span className="absolute ml-1 h-1.5 w-1.5 rounded-full bg-neon-emerald" aria-hidden="true" />
+      <span className="sr-only"> (hay un informe pendiente)</span>
+    </>
   );
 }

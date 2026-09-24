@@ -66,6 +66,12 @@ export function isLocalDateTime(s: string): boolean {
   return normalizeLocal(s) === s;
 }
 
+/** "AAAA-MM-DD" y que exista: un 31 de septiembre no pasa. */
+export function isLocalDate(s: string): boolean {
+  const m = DATE_RE.exec(s);
+  return m !== null && validDate(Number(m[1]), Number(m[2]), Number(m[3]));
+}
+
 /** Minutos desde la época, tratando la hora local como UTC. */
 export function toMinutes(s: LocalDateTime): number {
   const m = LOCAL_RE.exec(s);
