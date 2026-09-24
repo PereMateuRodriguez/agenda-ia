@@ -79,7 +79,9 @@ export class AnthropicProvider implements LlmProvider {
               // mismo bucle cada vuelta reutiliza todo lo anterior.
               cache_control: { type: "ephemeral" },
               system,
-              tools,
+              // Sin herramientas —un informe solo redacta— el campo no se manda:
+              // una lista vacía no es lo mismo que no ofrecer ninguna.
+              ...(tools.length > 0 ? { tools } : {}),
               messages,
             },
             { signal: options.signal },

@@ -9,17 +9,22 @@ export class ScriptedProvider implements LlmProvider {
   readonly model = "guion";
   readonly label = "guion de pruebas";
   sessions: { options: SessionOptions; results: ToolResult[][] }[] = [];
+  /**
+   * El guion avanza a lo largo de todas las sesiones, no se reinicia en cada
+   * una: un informe mensual abre una sesión por tramo y otra para el final, y
+   * cada una tiene que recibir su propia respuesta.
+   */
+  private cursor = 0;
 
   constructor(private readonly turns: ModelTurn[]) {}
 
   startSession(options: SessionOptions): AgentSession {
     const record = { options, results: [] as ToolResult[][] };
     this.sessions.push(record);
-    let i = 0;
-    const turns = this.turns;
+    const next = () => this.turns[this.cursor++];
     return {
       async next() {
-        const turn = turns[i++];
+        const turn = next();
         if (!turn) throw new Error("El guion se ha quedado sin turnos");
         return turn;
       },

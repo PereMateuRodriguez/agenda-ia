@@ -14,18 +14,28 @@ export class RateLimiter {
     private readonly clock: () => number = Date.now,
   ) {}
 
-  /** Apunta una petición si cabe. Si no, dice cuántos segundos faltan. */
-  take(key: string): { ok: true } | { ok: false; retryAfterSeconds: number } {
+  /**
+   * Apunta una petición si cabe. Si no, dice cuántos segundos faltan.
+   *
+   * `cost` es cuántas llamadas al modelo vale: un mensaje del chat cuenta como
+   * una, y un informe mensual como las que haga. Si no, el tope diario, que
+   * está para poner techo a lo que cuesta la demo, dejaría escapar la parte
+   * más cara.
+   */
+  take(key: string, cost = 1): { ok: true } | { ok: false; retryAfterSeconds: number } {
     if (this.limit <= 0) return { ok: true };
     const now = this.clock();
     const since = now - this.windowMs;
     const recent = (this.hits.get(key) ?? []).filter((t) => t > since);
 
-    if (recent.length >= this.limit) {
+    if (recent.length + cost > this.limit) {
       this.hits.set(key, recent);
-      return { ok: false, retryAfterSeconds: Math.max(1, Math.ceil((recent[0] + this.windowMs - now) / 1000)) };
+      // Si no cabe ni con la ventana vacía, esperar no arregla nada; se dice
+      // el tiempo hasta que se vacíe, que es lo más honesto que se puede dar.
+      const oldest = recent[0] ?? now;
+      return { ok: false, retryAfterSeconds: Math.max(1, Math.ceil((oldest + this.windowMs - now) / 1000)) };
     }
-    recent.push(now);
+    for (let i = 0; i < cost; i++) recent.push(now);
     this.hits.set(key, recent);
     if (this.hits.size > 10_000) this.prune(since);
     return { ok: true };

@@ -72,6 +72,13 @@ describe("AnthropicProvider", () => {
     ]);
   });
 
+  it("sin herramientas no manda el campo tools", async () => {
+    const { client, create } = fakeClient([{ stop_reason: "end_turn", content: [{ type: "text", text: "Informe." }] }]);
+    const session = new AnthropicProvider({ client }).startSession({ ...options, tools: [] });
+    expect(await session.next()).toEqual({ text: "Informe.", toolCalls: [], stop: "end" });
+    expect(create.mock.calls[0][0]).not.toHaveProperty("tools");
+  });
+
   it("mira el motivo de parada antes que el contenido", async () => {
     const { client } = fakeClient([
       { stop_reason: "refusal", content: [] },
@@ -135,6 +142,13 @@ describe("OllamaProvider", () => {
     });
     expect(body.messages[0]).toEqual({ role: "system", content: "INSTRUCCIONES\n\nCONTEXTO" });
     expect(body.messages.at(-1)).toEqual({ role: "tool", content: "{}", tool_name: "list_events" });
+  });
+
+  it("sin herramientas no manda el campo tools", async () => {
+    const fetch = fakeFetch([{ body: { message: { role: "assistant", content: "Informe." }, done_reason: "stop" } }]);
+    const session = new OllamaProvider({ fetch }).startSession({ ...options, tools: [] });
+    expect(await session.next()).toEqual({ text: "Informe.", toolCalls: [], stop: "end" });
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).not.toHaveProperty("tools");
   });
 
   it("acepta argumentos en texto JSON", async () => {

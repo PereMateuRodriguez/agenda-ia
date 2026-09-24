@@ -81,7 +81,9 @@ export class OllamaProvider implements LlmProvider {
           {
             model: provider.model,
             messages,
-            tools,
+            // Sin herramientas no se manda el campo: así un informe funciona
+            // también con modelos que no admiten herramientas.
+            ...(tools.length > 0 ? { tools } : {}),
             stream: false,
             options: { temperature: 0.2, num_ctx: provider.numCtx },
           },
