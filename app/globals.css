@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+/*
+ * Carbón y acentos neón. Los acentos se usan para señalar, nunca como único
+ * portador de información: el estado de cada paso del agente va también en
+ * texto.
+ */
+@theme {
+  --color-carbon-950: #050507;
+  --color-carbon-900: #0a0a0e;
+  --color-carbon-800: #111118;
+  --color-carbon-700: #1a1b23;
+  --color-pizarra-500: #2a2d38;
+
+  --color-neon-cyan: #00e5ff;
+  --color-neon-emerald: #00ffa3;
+  --color-neon-purple: #a78bfa;
+
+  --font-display: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, "Cascadia Code", monospace;
+}
+
+@layer base {
+  html,
+  body {
+    background: var(--color-carbon-950);
+    color: #e4e4e7;
+    font-family: var(--font-display);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: var(--color-neon-cyan);
+    color: var(--color-carbon-950);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-pizarra-500) transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-neon-cyan);
+    outline-offset: 2px;
+  }
+
+  dialog::backdrop {
+    background: rgb(5 5 7 / 0.75);
+    backdrop-filter: blur(4px);
+  }
+}
+
+/* Los eventos que acaba de tocar el agente se iluminan un momento. */
+@keyframes destello {
+  from {
+    box-shadow:
+      0 0 0 2px var(--color-neon-emerald),
+      0 0 24px rgb(0 255 163 / 0.45);
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .destello {
+    animation: destello 2.4s ease-out;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .destello {
+    box-shadow: 0 0 0 2px var(--color-neon-emerald);
+  }
+}

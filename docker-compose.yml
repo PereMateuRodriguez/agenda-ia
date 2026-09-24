@@ -1,0 +1,60 @@
+# La agenda y un Ollama propio, en una red interna.
+#
+#   docker compose up -d --build
+#   docker compose exec ollama ollama pull qwen2.5:7b
+#
+# La configuración se lee del fichero .env de esta carpeta (copia
+# .env.example). Ollama no publica ningún puerto: solo lo alcanza la agenda
+# por la red de Docker.
+#
+# ¿Ya tienes Ollama en la máquina, o vas a usar Claude? Arranca solo la agenda:
+#   docker compose up -d --build --no-deps agenda
+# y en .env pon OLLAMA_URL=http://host.docker.internal:11434, o
+# LLM_PROVIDER=anthropic con tu ANTHROPIC_API_KEY.
+
+services:
+  agenda:
+    build: .
+    restart: unless-stopped
+    # Solo accesible desde esta máquina. Para abrirla a otros, pon delante un
+    # proxy con HTTPS y revisa los límites del README.
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-}
+      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-}
+      RATE_LIMIT_PER_10MIN: ${RATE_LIMIT_PER_10MIN:-}
+      DAILY_LIMIT: ${DAILY_LIMIT:-}
+      TRUSTED_IP_HEADER: ${TRUSTED_IP_HEADER:-}
+    # Para alcanzar un Ollama que corre en la propia máquina (en Linux,
+    # host.docker.internal no existe si no se declara).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - ollama
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    # Con GPU NVIDIA (y el NVIDIA Container Toolkit instalado), descomenta:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  ollama:
